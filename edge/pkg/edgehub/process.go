@@ -12,6 +12,7 @@ import (
 	messagepkg "github.com/kubeedge/kubeedge/edge/pkg/common/message"
 	"github.com/kubeedge/kubeedge/edge/pkg/common/modules"
 	"github.com/kubeedge/kubeedge/edge/pkg/edgehub/clients"
+	"github.com/kubeedge/kubeedge/edge/pkg/edgehub/common/cacheutil"
 	"github.com/kubeedge/kubeedge/edge/pkg/edgehub/config"
 )
 
@@ -24,6 +25,11 @@ var groupMap = map[string]string{
 	"twin":     modules.TwinGroup,
 	"func":     modules.MetaGroup,
 	"user":     modules.BusGroup,
+}
+var edgeCache *cacheutil.EdgeCache
+
+func init() {
+	edgeCache = cacheutil.NewMetaCache()
 }
 
 func (eh *EdgeHub) initial() (err error) {
@@ -128,6 +134,17 @@ func (eh *EdgeHub) routeToCloud() {
 		}
 	}
 }
+func (eh *EdgeHub) cacheToCloud() {
+	klog.Infof("start sending cache to cloud")
+
+	ci := edgeCache.GetCacheIndex()
+	cache := edgeCache.GetCache()
+	for _, name := range ci {
+		eh.chClient.Send(*cache[name])
+		edgeCache.RemoveCache(name)
+	}
+	edgeCache.CleanIndex()
+}
 
 func (eh *EdgeHub) keepalive() {
 	for {
@@ -152,12 +169,41 @@ func (eh *EdgeHub) keepalive() {
 		time.Sleep(time.Duration(config.Config.Heartbeat) * time.Second)
 	}
 }
+func (eh *EdgeHub) cacheOnEdge() {
+	klog.Infof("start caching on edge")
+	for {
+		select {
+		case <-beehiveContext.Done():
+			klog.Warning("EdgeHub CacheOnEdge stop")
+			return
+		default:
+		}
+		if !edgeCache.IsEnabled() {
+			return
+		}
+		message, err := beehiveContext.Receive(ModuleNameEdgeHub)
+		if err != nil {
+			klog.Errorf("failed to receive message from edge: %v", err)
+			time.Sleep(time.Second)
+			continue
+		}
+
+		// save message to cache
+		edgeCache.SaveToCache(&message)
+
+	}
+}
 
 func (eh *EdgeHub) pubConnectInfo(isConnected bool) {
 	// var info model.Message
 	content := connect.CloudConnected
 	if !isConnected {
 		content = connect.CloudDisconnected
+		edgeCache.SetEnabled(!isConnected)
+		go eh.cacheOnEdge()
+	} else {
+		edgeCache.SetEnabled(!isConnected)
+		eh.cacheToCloud()
 	}
 
 	for _, group := range groupMap {
