@@ -28,10 +28,6 @@ var groupMap = map[string]string{
 }
 var edgeCache *cacheutil.EdgeCache
 
-func init() {
-	edgeCache = cacheutil.NewMetaCache()
-}
-
 func (eh *EdgeHub) initial() (err error) {
 	cloudHubClient, err := clients.GetClient()
 	if err != nil {
@@ -97,6 +93,10 @@ func (eh *EdgeHub) routeToEdge() {
 	}
 }
 
+func (eh *EdgeHub) SendCacheToCloud(message model.Message) error {
+	return eh.sendToCloud(message)
+}
+
 func (eh *EdgeHub) sendToCloud(message model.Message) error {
 	eh.keeperLock.Lock()
 	klog.V(4).Infof("[edgehub/sendToCloud] send msg to cloud, msg: %+v", message)
@@ -134,23 +134,8 @@ func (eh *EdgeHub) routeToCloud() {
 		}
 	}
 }
-func (eh *EdgeHub) cacheToCloud() error {
-	edgeCache.GetLock()
-	defer edgeCache.ReleaseLock()
-	klog.Infof("start sending cache to cloud")
-	cache := edgeCache.GetCache()
-	for edgeCache.GetIndexLength() > 0 {
-		name := edgeCache.GetFirstIndex()
-		err := eh.sendToCloud(*cache[name])
-		if err != nil {
-			return err
-		}
-		klog.Infof("successfully send cache %s to cloud", name)
-		edgeCache.ShiftIndex()
-		edgeCache.RemoveCache(name)
-	}
-	klog.Infof("finished sending cache to cloud")
-	return nil
+func (eh *EdgeHub) initCache() {
+	edgeCache = cacheutil.NewMetaCache(eh)
 }
 func (eh *EdgeHub) disableCache() {
 	edgeCache.SetEnabled(false)
@@ -171,7 +156,7 @@ func (eh *EdgeHub) enableCache() {
 			}
 			if !edgeCache.IsEnabled() {
 				klog.Infof("stop caching on edge")
-				err := eh.cacheToCloud()
+				err := edgeCache.CacheToCloud()
 				if err != nil {
 					klog.Warning("sending Cache to cloud failed: %v", err)
 				}
